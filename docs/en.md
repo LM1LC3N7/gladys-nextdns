@@ -1,61 +1,97 @@
-# Demo Devices Template
+# NextDNS
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Your NextDNS profiles in Gladys, through the official NextDNS API and the API
+key of your account. Each profile becomes a Gladys device:
 
-## What you get
+- **Queries (24 h)** and **Blocked queries (24 h)**: the DNS queries and the
+  blocked queries of the last 24 hours;
+- **Blocked queries (%)**: the blocked share;
+- **Encrypted queries (%)**: the share of the queries that came over an
+  encrypted DNS transport (DNS-over-HTTPS, DNS-over-TLS, DNS-over-QUIC…);
+- **Devices seen (24 h)**: the identified devices that made at least one query
+  (unidentified queries do not count);
+- the state of each **filter** (1 on, 0 off): security protections, disguised
+  trackers blocking, safe search, YouTube restricted mode, bypass blocking,
+  categories (porn, gambling, dating, piracy, social networks, online gaming,
+  video streaming) and the blocked services of your profile (TikTok,
+  Fortnite…);
+- the **Filter command** select, to turn a filter on or off (off by default,
+  see Commands).
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+> **This integration has never been tested against a real NextDNS account.**
+> This first version was written from the official documentation of the
+> NextDNS API and the nextdns Python library 5.1.0, and tested only against a
+> fake NextDNS. Tell on the Gladys forum what works and what does not.
+
+Unofficial integration, not affiliated with NextDNS.
 
 ## Configuration
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+- **API key**: on [my.nextdns.io](https://my.nextdns.io/account), **Account**,
+  **API** section, at the bottom of the page. Kept by Gladys in its database,
+  never shown again, sent only to `api.nextdns.io`, in the `X-Api-Key` header
+  (never in an address, never in a log, never in the `/data` volume). Beware:
+  the key gives access to the whole NextDNS account (NextDNS offers no
+  read-only key).
+- **Profiles**: the ids of the profiles to follow (the 6 characters of
+  `my.nextdns.io/<id>`), separated by commas; empty, every profile of the
+  account, 10 at most.
+- **Refresh**: every 5 minutes (default) to every hour. Each reading makes 4
+  requests per profile, one after the other.
+- **Allow the filter commands** and **Allow turning protections off**: off by
+  default (see Commands).
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+Then open the **Discovery** tab and create the profiles to follow.
 
-## Actions
+NextDNS only has figures when the **Logs** are on in the profile: otherwise
+the queries stay at 0.
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+## Commands
 
-## Scenes
+- By default Gladys only reads. A filter is **never a switch**: Gladys hands
+  every switch to the voice assistants (Google Home, Alexa, HomeKit), MCP and
+  the "turn off" scene actions, so "turn everything off" would remove your
+  protections. Each filter is a reading, and commands go through the **Filter
+  command** select of the profile (dashboard or the "Control a device" scene
+  action).
+- **Turn on: …** (turning a filter on) needs **Allow the filter commands**.
+- **Turn off: …** (turning off a security protection, the tracker blocking or
+  a parental control filter) also needs **Allow turning protections off**.
+  Without it, Gladys refuses and sends nothing.
+- Just before acting, Gladys reads the profile from NextDNS again and decides
+  on that reading only: a filter whose state is unknown is refused; a filter
+  already in the state asked sends nothing. When the command cannot be checked
+  within 3.5 s, nothing is sent and Gladys shows a failure (never an action
+  after a failure shown). A command that left without an answer of NextDNS is
+  said "sent, without confirmation", never "not sent", and the profile is
+  read again a few seconds later.
+- The commands of a profile run one at a time. The select goes back to "—"
+  after each command.
+- The blocked services are those of your profile: a service added later in
+  NextDNS shows at the next Discovery; a service removed keeps its feature (at
+  0), so that the history is never broken.
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+## Connection problems
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+- **Key refused** (HTTP 401, or 403 from the API itself): Gladys does not try
+  again by itself, not even after a restart. Copy the key, paste it and save,
+  or press **Test the connection**.
+- **NextDNS overloaded** (HTTP 429, met by any request) or **server error**
+  (HTTP 5xx on the list of the profiles): every request stops, for the chosen
+  interval at least (429: 1 minute to 6 hours, as NextDNS asks), even after a
+  restart; saving the configuration or pressing **Test the connection** lifts
+  the pause.
+- **NextDNS unreachable**: retried at the chosen interval, then more and more
+  spaced up to one hour. The devices show unreachable meanwhile.
+- A secondary request of a profile that fails (encrypted share, devices…)
+  never blocks the other figures: the connection status says so.
 
-## Dashboard
+## Limits
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
-
-## Troubleshooting
-
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+- One NextDNS account per integration, 10 profiles at most, 60 blocked
+  services per profile.
+- **Devices seen** counts 500 devices at most.
+- The shares in % have no unit in Gladys (the core has no "share of queries"
+  category): 75 means 75 %.
+- Blocklists, the allowlist, the denylist and the settings (logs, cache…) are
+  not followed.

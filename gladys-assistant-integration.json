@@ -1,177 +1,118 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "NextDNS",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "Your NextDNS profiles: queries, blocked share, encrypted DNS, devices and filters.",
+    "fr": "Vos profils NextDNS : requêtes, part bloquée, DNS chiffré, appareils et filtres."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-nextdns:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-nextdns/main/cover.png",
+  "categories": ["network", "security"],
+  "transports": ["cloud"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": { "en": "How it works", "fr": "Fonctionnement" },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Gladys reads your NextDNS profiles through the official NextDNS API, with the API key of your account. Each profile becomes a Gladys device (Discovery tab): queries and blocked queries of the last 24 hours, the blocked share, the share of DNS-over-HTTPS, DNS-over-TLS and other DNS-over-encrypted-transport queries, the devices seen, and the state of each filter (security, privacy, parental control). Unofficial integration, not affiliated with NextDNS.",
+        "fr": "Gladys lit vos profils NextDNS par l'API officielle de NextDNS, avec la clé d'API de votre compte. Chaque profil devient un appareil Gladys (onglet Découverte) : requêtes et requêtes bloquées des dernières 24 heures, la part bloquée, la part des requêtes en DNS-over-HTTPS, DNS-over-TLS et autres transports DNS protégés, les appareils vus, et l'état de chaque filtre (sécurité, vie privée, contrôle parental). Intégration non officielle, sans lien avec NextDNS."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://my.nextdns.io/account",
+          "label": {
+            "en": "Your NextDNS account (API key)",
+            "fr": "Votre compte NextDNS (clé d'API)"
+          }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
+      "key": "api_key",
+      "type": "secret",
+      "label": { "en": "API key", "fr": "Clé d'API" },
       "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
+        "en": "On my.nextdns.io: Account, API, at the bottom of the page. Kept by Gladys in its database, never shown again, sent only to api.nextdns.io, in the X-Api-Key header.",
+        "fr": "Sur my.nextdns.io : Account, API, en bas de la page. Gardée par Gladys dans sa base, jamais réaffichée, envoyée seulement à api.nextdns.io, dans l'en-tête X-Api-Key."
       },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
+      "required": true
     },
     {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
+      "key": "profiles",
+      "type": "string",
+      "label": { "en": "Profiles (optional)", "fr": "Profils (facultatif)" },
       "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+        "en": "Ids of the NextDNS profiles to follow (the 6 characters of my.nextdns.io/<id>), separated by commas. Empty: every profile of the account, 10 at most.",
+        "fr": "Identifiants des profils NextDNS à suivre (les 6 caractères de my.nextdns.io/<id>), séparés par des virgules. Vide : tous les profils du compte, 10 au plus."
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
+      "placeholder": { "en": "e.g. abc123, def456", "fr": "ex. abc123, def456" },
+      "required": false
     },
     {
-      "key": "unit",
+      "key": "refresh_interval",
       "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
-      "required": false,
-      "default": "celsius",
+      "label": { "en": "Refresh", "fr": "Rafraîchissement" },
+      "description": {
+        "en": "How often Gladys reads NextDNS (4 requests per profile each time).",
+        "fr": "À quel rythme Gladys lit NextDNS (4 requêtes par profil à chaque fois)."
+      },
+      "required": true,
+      "default": "300",
       "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
+        { "value": "300", "label": { "en": "Every 5 minutes", "fr": "Toutes les 5 minutes" } },
+        { "value": "600", "label": { "en": "Every 10 minutes", "fr": "Toutes les 10 minutes" } },
+        { "value": "900", "label": { "en": "Every 15 minutes", "fr": "Toutes les 15 minutes" } },
+        { "value": "1800", "label": { "en": "Every 30 minutes", "fr": "Toutes les 30 minutes" } },
+        { "value": "3600", "label": { "en": "Every hour", "fr": "Toutes les heures" } }
       ]
     },
     {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "key": "security_section",
+      "type": "section",
+      "label": { "en": "Commands", "fr": "Commandes" },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "By default Gladys only reads. The \"Filter command\" select of each profile turns a filter on or off only once you allow it below (a filter is never a switch: no voice assistant nor \"turn everything off\" can touch it). Turning a filter on needs the first option; turning one off (security, privacy or parental control) needs the second one too.",
+        "fr": "Par défaut Gladys ne fait que lire. La liste « Filter command » de chaque profil n'active ou ne désactive un filtre qu'une fois autorisé ci-dessous (un filtre n'est jamais un interrupteur : ni assistant vocal ni « tout éteindre » ne peut y toucher). Activer un filtre demande la première option ; en désactiver un (sécurité, vie privée ou contrôle parental) demande aussi la seconde."
+      }
+    },
+    {
+      "key": "allow_commands",
+      "type": "boolean",
+      "label": {
+        "en": "Allow the filter commands",
+        "fr": "Autoriser les commandes de filtres"
       },
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "default": false
+    },
+    {
+      "key": "allow_disable_protection",
+      "type": "boolean",
+      "label": {
+        "en": "Allow turning protections off",
+        "fr": "Autoriser la désactivation des protections"
+      },
+      "description": {
+        "en": "Lets Gladys turn off a security protection or a parental control filter (with the option above). Off: only turning filters on is possible.",
+        "fr": "Permet à Gladys de désactiver une protection de sécurité ou un filtre de contrôle parental (avec l'option ci-dessus). Désactivé : seule l'activation des filtres est possible."
+      },
+      "required": false,
+      "default": false
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
+      "key": "test_connection",
+      "label": { "en": "Test the connection", "fr": "Tester la connexion" },
+      "description": {
+        "en": "Connects to NextDNS (even after a refused key or a pause) and lists the profiles.",
+        "fr": "Se connecte à NextDNS (même après une clé refusée ou une pause) et liste les profils."
+      },
       "timeout_seconds": 30
-    },
-    {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
-      "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
     }
   ]
 }
