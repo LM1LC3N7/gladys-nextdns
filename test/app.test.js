@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFakeGladys } from '@gladysassistant/integration-sdk/testing';
-import { NextDnsApp } from '../src/app.js';
+import { NextDnsApp, SELECT_RESET_MS } from '../src/app.js';
 import { ACTIONS, API_ORIGIN, COMMAND_ACK_MS, INTERVALS, STORE_FILE } from '../src/constants.js';
 import { buildProfileDevice } from '../src/devices.js';
 import { registerHandlers } from '../src/handlers.js';
@@ -72,6 +72,9 @@ const command = (gladys, device, value) =>
   gladys.fake.setValue(device, feature(device, 'command'), value);
 const writes = (nextdns) => nextdns.requests.filter((r) => r.method !== 'GET');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+const settle = async () => {
+  for (let i = 0; i < 20; i += 1) await tick();
+};
 
 test('start: Discovery gets every profile; figures, filters, badges', async () => {
   const { gladys, nextdns, timers } = await setup();
@@ -219,13 +222,15 @@ test('HTTP 5xx on the profiles: a pause kept in /data, growing, never under the 
   const nextdns = createFakeNextdns();
   nextdns.failures.push({ path: '/profiles', method: 'GET', status: 503 });
   nextdns.failures.push({ path: '/profiles', method: 'GET', status: 503 });
-  const { gladys, timers, dataDir } = await setup({ nextdns });
+  const { gladys, timers, dataDir, clock } = await setup({ nextdns });
   assert.match(gladys.fake.connectionStatus.message.en, /server error \(HTTP 503\)/);
   assert.deepEqual(timers.delays(), [INTERVAL]);
   const store = JSON.parse(readFileSync(join(dataDir, STORE_FILE), 'utf8'));
   assert.equal(Number(store.meta.pausedUntil), T0 + INTERVAL);
+  clock.now += INTERVAL;
   await timers.run();
   assert.deepEqual(timers.delays(), [2 * INTERVAL], 'doubled');
+  clock.now += 2 * INTERVAL;
   await timers.run();
   assert.equal(gladys.fake.connectionStatus.connected, true);
 });
@@ -454,11 +459,202 @@ test('a slow answer: Gladys is answered at 4.3 s, the state follows', async () =
   for (let i = 0; i < 20 && !timers.delays().includes(COMMAND_ACK_MS); i += 1) await tick();
   await timers.run((ms) => ms === COMMAND_ACK_MS);
   const ack = await pending;
-  assert.equal(ack.success, true, ack.error);
+  assert.equal(ack.success, false, 'told, not hidden');
+  assert.match(ack.error, /was sent, NextDNS has not confirmed it yet/);
+  assert.doesNotMatch(ack.error, /nothing was sent/);
   assert.equal(state(gladys, homeDevice, 'filter-security-nrd'), 0, 'not confirmed yet');
+  // The chain of the profile waits for the request still unanswered.
+  const reads = () => nextdns.requests.filter((r) => r.path === '/profiles/abc123').length;
+  const before = reads();
+  const next = command(gladys, homeDevice, 'enable:filter-security-ddns');
+  await settle();
+  assert.equal(reads(), before, 'the next command waits');
   open();
-  for (let i = 0; i < 10; i += 1) await tick();
-  assert.equal(state(gladys, homeDevice, 'filter-security-nrd'), 1);
+  await settle();
+  assert.equal(state(gladys, homeDevice, 'filter-security-nrd'), 1, 'the state follows');
+  const second = await next;
+  assert.equal(second.success, true, second.error);
+  assert.equal(reads(), before + 1);
+});
+
+test('unticking an option applies at once, even behind a slow reading (B1)', async () => {
+  const both = { ...BASE_CONFIG, allow_commands: true, allow_disable_protection: true };
+  const { app, nextdns } = await setup({ config: both });
+  let open;
+  const gate = new Promise((resolve) => {
+    open = resolve;
+  });
+  nextdns.onRequest = async (r) => {
+    if (r.path === '/profiles') await gate;
+  };
+  const first = app.start(both, { force: true });
+  await settle();
+  const second = app.start({ ...BASE_CONFIG, allow_commands: true }, { force: true });
+  const before = nextdns.requests.length;
+  await assert.rejects(
+    app.setValue(homeDevice, feature(homeDevice, 'command'), 'disable:filter-security-csam'),
+    /Turning a protection off is refused/,
+  );
+  assert.equal(nextdns.requests.length, before, 'nothing read nor sent');
+  // A command accepted just before is refused before sending (new generation).
+  nextdns.onRequest = null;
+  open();
+  await Promise.all([first, second]);
+  assert.equal(writes(nextdns).length, 0);
+  assert.equal(app.config.allowDisable, false);
+});
+
+test('a command accepted before a new configuration is refused before sending', async () => {
+  const both = { ...BASE_CONFIG, allow_commands: true, allow_disable_protection: true };
+  const { app, gladys, nextdns } = await setup({ config: both });
+  nextdns.onRequest = async (r) => {
+    if (r.method === 'GET' && r.path === '/profiles/abc123' && nextdns.onRequest) {
+      nextdns.onRequest = null;
+      app.start({ ...BASE_CONFIG, allow_commands: true }, { force: true });
+    }
+  };
+  const ack = await command(gladys, homeDevice, 'disable:filter-security-csam');
+  assert.equal(ack.success, false);
+  assert.equal(writes(nextdns).length, 0);
+});
+
+test('the select goes back to "none" after the ack, despite a pause; a failure is retried', async () => {
+  const { gladys, nextdns, timers } = await setup({ config: { allow_commands: true } });
+  const nones = () =>
+    gladys.fake.states.filter(
+      (s) => s.device_feature_external_id === featureId(homeDevice, 'command') && s.text === 'none',
+    ).length;
+  const start = nones();
+  let ack = await command(gladys, homeDevice, 'enable:filter-security-nrd');
+  assert.equal(ack.success, true, ack.error);
+  assert.equal(nones(), start, 'not before the ack');
+  await timers.run((ms) => ms === SELECT_RESET_MS);
+  assert.equal(nones(), start + 1, 'sent again although already "none" for the SDK');
+
+  // A 429 halts the loop: the reset still happens.
+  nextdns.failures.push({ path: '/profiles/abc123/security', method: 'PATCH', status: 429 });
+  ack = await command(gladys, homeDevice, 'enable:filter-security-ddns');
+  assert.match(ack.error, /HTTP 429/);
+  await timers.run((ms) => ms === SELECT_RESET_MS);
+  assert.equal(nones(), start + 2);
+});
+
+test('a reset of the select that fails is published by the next round', async () => {
+  const { gladys, timers, clock } = await setup({ config: { allow_commands: true } });
+  const ack = await command(gladys, homeDevice, 'enable:filter-security-nrd');
+  assert.equal(ack.success, true, ack.error);
+  const publish = gladys.publishChangedStates.bind(gladys);
+  gladys.publishChangedStates = async () => {
+    throw new Error('Gladys away');
+  };
+  await timers.run((ms) => ms === SELECT_RESET_MS);
+  gladys.publishChangedStates = publish;
+  const nones = () =>
+    gladys.fake.states.filter(
+      (s) => s.device_feature_external_id === featureId(homeDevice, 'command') && s.text === 'none',
+    ).length;
+  const before = nones();
+  clock.now += INTERVAL;
+  await timers.run((ms) => ms === INTERVAL);
+  assert.equal(nones(), before + 1);
+});
+
+test('only the options of the device: a forged service, an unknown profile, refused', async () => {
+  const { gladys, nextdns } = await setup({ config: { allow_commands: true } });
+  const before = nextdns.requests.length;
+  let ack = await command(gladys, homeDevice, 'enable:filter-service-zoom');
+  assert.equal(ack.success, false);
+  assert.match(ack.error, /Invalid value/);
+  const stranger = buildProfileDevice(ids, { id: 'zzz999', name: 'Other' }, []);
+  ack = await command(gladys, stranger, 'enable:filter-security-nrd');
+  assert.match(ack.error, /not followed/);
+  assert.equal(nextdns.requests.length, before);
+});
+
+test('an item without a boolean "active" is shown on but refused for a command', async () => {
+  const nextdns = createFakeNextdns();
+  nextdns.settings.abc123.parentalControl.services = [{ id: 'tiktok' }, { id: 'fortnite' }];
+  const { gladys } = await setup({
+    nextdns,
+    config: { allow_commands: true, allow_disable_protection: true },
+  });
+  assert.equal(state(gladys, homeDevice, 'filter-service-tiktok'), 1);
+  const ack = await command(gladys, homeDevice, 'disable:filter-service-tiktok');
+  assert.match(ack.error, /could not be read: nothing was sent/);
+  assert.equal(writes(nextdns).length, 0);
+});
+
+test('HTTP 429 met while a reading runs: the reading stops, the status stays "paused" (I4)', async () => {
+  const { gladys, nextdns, timers, clock } = await setup({ config: { allow_commands: true } });
+  nextdns.failures.push({ path: '/profiles/abc123/security', method: 'PATCH', status: 429 });
+  let fired = false;
+  nextdns.onRequest = async (r) => {
+    if (!fired && r.path === '/profiles/abc123/analytics/status') {
+      fired = true;
+      await command(gladys, homeDevice, 'enable:filter-security-nrd');
+    }
+  };
+  const before = nextdns.requests.length;
+  clock.now += INTERVAL;
+  await timers.run((ms) => ms === INTERVAL);
+  assert.ok(fired);
+  assert.match(gladys.fake.connectionStatus.message.en, /slow down/);
+  assert.equal(gladys.fake.connectionStatus.connected, false);
+  const after = nextdns.requests.slice(before).map((r) => r.path);
+  assert.ok(!after.includes('/profiles/def456'), `no request after the pause: ${after}`);
+  assert.deepEqual(
+    timers.delays().filter((ms) => ms !== SELECT_RESET_MS),
+    [INTERVAL],
+  );
+});
+
+test('a reconnection during a pause re-sends the status and the Discovery (I5)', async () => {
+  const nextdns = createFakeNextdns();
+  const { gladys, timers, clock } = await setup({ nextdns });
+  let discoveries = 0;
+  const publish = gladys.publishDiscoveredDevices.bind(gladys);
+  gladys.publishDiscoveredDevices = (devices) => {
+    discoveries += 1;
+    return publish(devices);
+  };
+  nextdns.failures.push({ path: '/profiles', method: 'GET', status: 429 });
+  clock.now += INTERVAL;
+  await timers.run((ms) => ms === INTERVAL);
+  assert.match(gladys.fake.connectionStatus.message.en, /slow down/);
+  const statuses = gladys.fake.connectionStatuses.length;
+  const requests = nextdns.requests.length;
+  gladys.emit('connected');
+  await settle();
+  assert.equal(gladys.fake.connectionStatuses.length, statuses + 1);
+  assert.match(gladys.fake.connectionStatus.message.en, /slow down/);
+  assert.equal(discoveries, 1, 'the profiles known are published again');
+  assert.equal(nextdns.requests.length, requests, 'no request during the pause');
+  assert.deepEqual(timers.delays(), [INTERVAL], 'the end of the pause still scheduled');
+});
+
+test('10 profiles at most: the created ones first, the others said left out (M4)', async () => {
+  const nextdns = createFakeNextdns();
+  for (let i = 0; i < 11; i += 1) {
+    nextdns.profiles.push({ id: `zz${String(i).padStart(4, '0')}`, name: `P${i}` });
+  }
+  const last = buildProfileDevice(ids, { id: 'zz0010', name: 'P10' }, []);
+  const { gladys } = await setup({ nextdns, devices: [last] });
+  const names = gladys.fake.discoveredDevices.map((d) => d.name);
+  assert.equal(names.length, 10);
+  assert.ok(names.includes('NextDNS: P10'), 'the created profile is kept');
+  assert.match(gladys.fake.connectionStatus.message.en, /3 profiles left out/);
+});
+
+test('a device updated in Gladys gets its states again (M6)', async () => {
+  const { gladys } = await setup();
+  const count = () =>
+    gladys.fake.states.filter(
+      (s) => s.device_feature_external_id === featureId(homeDevice, 'queries'),
+    ).length;
+  const before = count();
+  await gladys.fake.deviceUpdated(homeDevice);
+  await settle();
+  assert.equal(count(), before + 1);
 });
 
 test('a created device gets its states; its services are never dropped', async () => {

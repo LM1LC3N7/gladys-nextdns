@@ -9,6 +9,8 @@ export function registerHandlers(gladys, app, logger) {
   // --- Discovery and device lifecycle --------------------------------------------
   gladys.onScanRequest(() => app.publishDiscovery());
   gladys.onDeviceCreated((device) => app.deviceCreated(device));
+  // An update (renamed, room changed...) makes the SDK forget the values: sent again.
+  gladys.onDeviceUpdated((device) => app.deviceCreated(device));
   gladys.onDeviceDeleted((device) => app.deviceDeleted(device));
 
   // --- Commands: the "Filter command" select -------------------------------------

@@ -26,6 +26,12 @@ up to date at the end of every milestone.
       docs en/fr. Tested with unit tests against the SDK's fake Gladys, a fake
       NextDNS in memory and loopback HTTP servers. **Never tested against a
       real NextDNS account.** No Docker on this PC: no e2e test in a container.
+- [x] **Review corrections** (2026-10-18): permissions narrowed at once by a
+      new configuration (B1); a slow answer is shown as "sent, not confirmed
+      yet" (I1); the select reset after the ack, forced, own timers (I2); only
+      the options of the device accepted (I3); a reading stops on a pause or
+      a new generation (I4); wanted status and Discovery re-sent on
+      reconnection (I5); minor points M1-M8.
 - [ ] **Milestone 2 — real account** (a tester with NextDNS): record real
       answers as fixtures (key removed), fix what differs. To check first:
   - what the API answers to a wrong key (401 or 403, JSON `errors`?), and
@@ -94,10 +100,41 @@ up to date at the end of every milestone.
   state asked already, nothing sent. Nothing is sent once 3.5 s have passed;
   the connection must be up before that deadline, else "not sent". Gladys is
   answered at NextDNS's answer or 4.3 s after the command; a command that may
-  have left is "sent, without confirmation" (never "not sent"), the profile
+  have left is a failure "sent, not confirmed yet" (never "not sent"), the profile
   is read again 3 s later. A reading crossed by a command keeps the
   command's result (version per profile). The select is put back on "none"
   1.5 s after each command (`publishStates`, not deduplicated).
+- **A new configuration narrows at once** (review B1): `start()` and
+  `reconnected()` apply, before queuing, the permissions both the old and
+  the new configuration grant (`allowCommands`, `allowDisable` = old && new),
+  then bump the generation, so a command already accepted is refused before
+  sending and a reading in flight applies nothing. The same-configuration
+  path of `reconnected()` restarts the timers of the new generation as they
+  were (`resume()`: pause end, loop, or retry).
+- **Commands, review corrections**: no answer by 4.3 s is a failure shown as
+  "sent, NextDNS has not confirmed it yet" (I1), the state follows the
+  answer and the profile is read again; only the values of
+  `commandOptions(filtersOf(servicesOf(profile)))` are accepted (I3); the
+  profile must be followed (M3); the permissions are checked before anything
+  else; a listed item without a boolean `active` is shown on but unknown for a
+  command (M2); the publication of the observed state never holds the ack
+  (M5); the chain of a profile waits for an unanswered request until it
+  settles or its timeout (M7).
+- **Select reset** (I2): armed when the answer is decided (after the ack
+  decision), 1.5 s later, on timers of its own (a pause or a halt never
+  cancels it); `forgetPublishedStates(feature)` then `publishChangedStates`;
+  a failure leaves it to the next round of the loop.
+- **Readings and pauses** (I4): `readAll()` stops, applying nothing, before
+  each profile request and before going online when a pause came, or the
+  epoch, the generation or the client changed; `connect()` then schedules
+  nothing (whoever paused did). A pause is recorded whatever the
+  generation. A timer of a pause end that fires early reschedules itself.
+- **Reconnection** (I5): the status wanted is kept apart from the mark of
+  what Gladys received and sent again on every `connected`; the Discovery is
+  published again as soon as profiles are known, even during a pause.
+- **Cap of 10 profiles** (M4): the created ones first; the status says how
+  many are left out. A device updated in Gladys is handled like a created
+  one (M6: the SDK forgot its values).
 - **Adding a category / service**: PATCH `{ active }` when listed, POST
   `{ id, active: true }` when not (the library POSTs after a 404; here the
   fresh reading decides). Turning off one not listed: already off.

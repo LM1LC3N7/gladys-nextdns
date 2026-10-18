@@ -62,14 +62,20 @@ the queries stay at 0.
   on that reading only: a filter whose state is unknown is refused; a filter
   already in the state asked sends nothing. When the command cannot be checked
   within 3.5 s, nothing is sent and Gladys shows a failure (never an action
-  after a failure shown). A command that left without an answer of NextDNS is
-  said "sent, without confirmation", never "not sent", and the profile is
-  read again a few seconds later.
-- The commands of a profile run one at a time. The select goes back to "—"
-  after each command.
+  after a failure shown). A command that left without an answer of NextDNS in
+  time shows as a failure saying "sent, not confirmed yet" (never "not
+  sent"); the state of the filter follows the answer, and the profile is read
+  again a few seconds later.
+- Only the options of the select of the profile are accepted. The commands
+  of a profile run one at a time (the next one waits for the answer to the
+  previous one). The select goes back to "—" 1.5 s after each command.
+- Unticking an option takes effect at once, even while a reading runs.
 - The blocked services are those of your profile: a service added later in
-  NextDNS shows at the next Discovery; a service removed keeps its feature (at
-  0), so that the history is never broken.
+  NextDNS shows in Discovery; press **Update** to add it to the device. A
+  service removed keeps its feature (at 0), so that the history is never
+  broken.
+- The parental control **Recreation Time** is not taken into account: the
+  state shown is the setting of the filter, even during a recreation.
 
 ## Connection problems
 
@@ -88,8 +94,11 @@ the queries stay at 0.
 
 ## Limits
 
-- One NextDNS account per integration, 10 profiles at most, 60 blocked
-  services per profile.
+- One NextDNS account per integration, 10 profiles at most (the profiles
+  already created first; the connection status says how many are left out),
+  60 blocked services per profile.
+- Gladys accepts 300 states per minute: the first publication of many
+  profiles (up to 10) may take several reading rounds.
 - **Devices seen** counts 500 devices at most.
 - The shares in % have no unit in Gladys (the core has no "share of queries"
   category): 75 means 75 %.

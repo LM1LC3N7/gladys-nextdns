@@ -129,7 +129,8 @@ export const FIXED_FILTERS = Object.freeze([
   ...CATEGORIES.map((f) => make(KINDS.CATEGORY, f)),
 ]);
 
-export const serviceFilter = (id) => make(KINDS.SERVICE, [id, `Block ${SERVICE_NAMES[id] ?? id}`]);
+export const serviceFilter = (id) =>
+  make(KINDS.SERVICE, [id, `Block ${Object.hasOwn(SERVICE_NAMES, id) ? SERVICE_NAMES[id] : id}`]);
 
 /** The service id of a service feature key, or null. */
 export function serviceIdOf(key) {
@@ -145,7 +146,10 @@ export function filtersOf(serviceIds = []) {
   return [...FIXED_FILTERS, ...services.map(serviceFilter)];
 }
 
-/** The filter of a feature key, given the services of the profile, or null. */
+/**
+ * The filter a feature key names, or null. Any well-formed service id is
+ * accepted here: a command checks the options of the device (src/app.js).
+ */
 export function filterByKey(key) {
   const fixed = FIXED_FILTERS.find((f) => f.key === key);
   if (fixed) return fixed;
@@ -156,12 +160,18 @@ export function filterByKey(key) {
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const bit = (value) => (value === true ? 1 : value === false ? 0 : null);
 
-/** An entry of a list: 1 active, 0 inactive; a missing `active` counts as active. */
-const entryState = (entry) =>
-  entry?.active === false ? 0 : entry?.active === undefined || entry?.active === true ? 1 : null;
+/**
+ * An entry of a list: 1 active, 0 inactive. A missing `active` is shown as
+ * active (a listed item blocks), but is unknown for a command (strict).
+ */
+const entryState = (active, strict) => {
+  if (active === true) return 1;
+  if (active === false) return 0;
+  return active === undefined && !strict ? 1 : null;
+};
 
 /**
- * The items of parentalControl.categories / services: id -> 1 | 0 | null,
+ * The items of parentalControl.categories / services: id -> raw `active`,
  * or null when the list is not readable.
  */
 function readList(list) {
@@ -171,14 +181,15 @@ function readList(list) {
     if (!isObject(entry) || typeof entry.id !== 'string' || !ITEM_ID_PATTERN.test(entry.id)) {
       continue;
     }
-    items.set(entry.id, entryState(entry));
+    items.set(entry.id, entry.active);
   }
   return items;
 }
 
 /**
  * Read a profile answer (the `data` of GET /profiles/:id).
- * -> { services: [ids], state(filter) -> 1 | 0 | null (unknown), present(filter) }
+ * -> { services: [ids], state(filter) -> 1 | 0 | null (unknown),
+ *      commandState(filter) (the same, strict), present(filter) }
  */
 export function readProfile(profile) {
   const security = isObject(profile?.security) ? profile.security : null;
@@ -187,31 +198,34 @@ export function readProfile(profile) {
   const categories = readList(parental?.categories);
   const services = readList(parental?.services);
   const lists = { [KINDS.CATEGORY]: categories, [KINDS.SERVICE]: services };
+  const stateOf = (filter, strict) => {
+    switch (filter.kind) {
+      case KINDS.SECURITY:
+        return bit(security?.[filter.id]);
+      case KINDS.PRIVACY:
+        return bit(privacy?.[filter.id]);
+      case KINDS.PARENTAL:
+        return bit(parental?.[filter.id]);
+      case KINDS.CATEGORY:
+      case KINDS.SERVICE: {
+        const list = lists[filter.kind];
+        if (!list) return null;
+        // Absent from the list: not blocked.
+        return list.has(filter.id) ? entryState(list.get(filter.id), strict) : 0;
+      }
+      default:
+        return null;
+    }
+  };
   return {
     services: services ? [...services.keys()].slice(0, 1000) : [],
     /** Is the item (category, service) listed in the profile? */
     present(filter) {
       return Boolean(lists[filter.kind]?.has(filter.id));
     },
-    state(filter) {
-      switch (filter.kind) {
-        case KINDS.SECURITY:
-          return bit(security?.[filter.id]);
-        case KINDS.PRIVACY:
-          return bit(privacy?.[filter.id]);
-        case KINDS.PARENTAL:
-          return bit(parental?.[filter.id]);
-        case KINDS.CATEGORY:
-        case KINDS.SERVICE: {
-          const list = lists[filter.kind];
-          if (!list) return null;
-          // Absent from the list: not blocked.
-          return list.has(filter.id) ? list.get(filter.id) : 0;
-        }
-        default:
-          return null;
-      }
-    },
+    state: (filter) => stateOf(filter, false),
+    /** For a command: an item without a boolean `active` is unknown (refused). */
+    commandState: (filter) => stateOf(filter, true),
   };
 }
 

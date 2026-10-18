@@ -28,4 +28,24 @@ the notes of the version's GitHub Release.
   pauses kept across restarts.
 - Button "Test the connection".
 
+### Security
+
+- Unticking a command option applies at once, even while a reading or a
+  restart is queued; a command accepted before is refused before sending.
+- Only the options of the select of the profile are accepted (no forged
+  service), on a followed profile; an item whose state is not a clear
+  boolean is refused.
+- A command without an answer within 4.3 s is shown as "sent, not confirmed
+  yet", and the next command on the profile waits for that answer.
+
+### Fixed
+
+- The select goes back to "none" after the answer, even during a pause; a
+  failed reset is sent again by the next round.
+- A reading stops at once when a pause starts: the status stays "paused".
+- A reconnection to Gladys sends the status and the Discovery again, even
+  during a pause; an updated device gets its states again.
+- With more than 10 profiles, the created ones are kept and the status says
+  how many are left out.
+
 [Unreleased]: https://github.com/LM1LC3N7/gladys-nextdns/commits/main

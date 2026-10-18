@@ -40,8 +40,8 @@ Gladys ⇄ SDK ⇄ src/app.js (NextDnsApp)
   Commands go through one `text`/`select` per profile; turning on needs
   `allow_commands`, turning off needs `allow_disable_protection` too. Each
   command reads the profile again and decides on that reading only; nothing
-  is sent past 3.5 s; one that left without an answer is "sent, without
-  confirmation".
+  is sent past 3.5 s; one that left without an answer is a failure "sent,
+  not confirmed yet" (never "not sent").
 
 ## Development
 

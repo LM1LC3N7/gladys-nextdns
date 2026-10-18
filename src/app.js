@@ -31,9 +31,11 @@ import {
   INTERVALS,
   LIMITS,
   STORE_FILE,
+  TIMEOUTS,
 } from './constants.js';
 import {
   buildProfileDevice,
+  commandOptions,
   createdProfiles,
   parseExternalId,
   profileIds,
@@ -50,7 +52,7 @@ import { httpRequest } from './nextdns/http.js';
 /** The "Test the connection" button waits 30 s: answer before. */
 const TEST_BUDGET_MS = 25_000;
 /** After a command, the select goes back to "none" once Gladys stored the choice. */
-const SELECT_RESET_MS = 1_500;
+export const SELECT_RESET_MS = 1_500;
 const COMMAND_PATTERN = /^(enable|disable):(filter-[a-z0-9-]{1,80})$/;
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -84,10 +86,17 @@ export class NextDnsApp {
     this.client = null;
     this.generation = 0;
     this.epoch = 0;
+    /** The timers of the loop (cleared by halt()). */
     this.handles = new Set();
+    /** The timers of the select resets: a pause (halt) never cancels them. */
+    this.resetHandles = new Set();
     this.queue = Promise.resolve();
     /** One chain of commands per profile. */
     this.chains = new Map();
+    /** profile id -> a command request still unanswered (the chain waits for it). */
+    this.unsettled = new Map();
+    /** The status the integration wants Gladys to show: [connected, message]. */
+    this.wantedStatus = null;
     this.lastStatus = null;
     this.reset();
   }
@@ -108,6 +117,8 @@ export class NextDnsApp {
     this.missing = [];
     /** Profiles not read completely by the last round. */
     this.failedProfiles = 0;
+    /** Profiles left out by the cap of LIMITS.PROFILES. */
+    this.leftOut = 0;
     /** Bumped by every command on a profile: a reading crossed by one keeps the command's result. */
     this.filterVersions = new Map();
     this.clearCaches();
@@ -132,11 +143,28 @@ export class NextDnsApp {
   }
 
   /**
+   * A new configuration arrives: until its start runs (it waits behind the
+   * starts and readings queued), the permissions are those that BOTH the old
+   * and the new configuration grant, and the commands already accepted are
+   * refused before sending (new generation).
+   */
+  tighten(rawConfig) {
+    const next = normalizeConfig(rawConfig);
+    this.config = {
+      ...this.config,
+      allowCommands: this.config.allowCommands && next.allowCommands,
+      allowDisable: this.config.allowDisable && next.allowDisable,
+    };
+    this.generation += 1;
+  }
+
+  /**
    * (Re)start with a configuration. Calls are serialized. `force`: the user
    * asked (button, saved configuration): a key refused earlier is tried, a
    * pause is lifted.
    */
   start(rawConfig, { force = false } = {}) {
+    this.tighten(rawConfig);
     return this.enqueue(() => this.run(rawConfig, { force }));
   }
 
@@ -145,6 +173,7 @@ export class NextDnsApp {
    * client, the pause and the refusal; only what mirrors Gladys is sent again.
    */
   reconnected(rawConfig) {
+    this.tighten(rawConfig);
     return this.enqueue(async () => {
       const same =
         this.rawConfig !== null &&
@@ -153,18 +182,30 @@ export class NextDnsApp {
         await this.run(rawConfig, { force: false });
         return;
       }
-      const status = this.lastStatus;
+      this.config = normalizeConfig(rawConfig);
       this.clearCaches();
-      if (status) {
-        const [connected, message] = JSON.parse(status);
-        await this.setStatus(connected, message);
-      }
-      if (this.online) {
-        await this.publishDiscovered();
-        await this.publishAllStates();
-      }
+      if (this.wantedStatus) await this.setStatus(...this.wantedStatus);
+      if (this.profiles.size > 0) await this.publishDiscovered();
+      if (this.online) await this.publishAllStates();
       await this.publishTransports();
+      this.resume();
     });
+  }
+
+  /** The timers of the previous generation stopped (tighten): start them again, as they were. */
+  resume() {
+    this.halt();
+    const generation = this.generation;
+    if (this.blocked || !this.client) return;
+    if (this.paused()) {
+      this.schedule(this.pausedUntil - this.now(), () => this.connect(generation));
+    } else if (this.online) {
+      this.scheduleLoop(generation);
+    } else {
+      this.schedule(Math.max(this.config.intervalMs, this.retryDelay), () =>
+        this.connect(generation),
+      );
+    }
   }
 
   /** The value a refusal is about (HMAC with the salt of /data: never the key). */
@@ -177,10 +218,12 @@ export class NextDnsApp {
   async stop() {
     this.generation += 1;
     this.halt();
+    for (const handle of this.resetHandles) this.timers.clearTimeout(handle);
+    this.resetHandles.clear();
     this.dropClient();
   }
 
-  /** Clear every timer; the runs still in flight will not schedule again. */
+  /** Clear every timer of the loop; the runs still in flight will not schedule again. */
   halt() {
     this.epoch += 1;
     for (const handle of this.handles) this.timers.clearTimeout(handle);
@@ -244,16 +287,16 @@ export class NextDnsApp {
     await this.connect(generation);
   }
 
-  schedule(delay, task) {
+  schedule(delay, task, handles = this.handles) {
     const handle = this.timers.setTimeout(async () => {
-      this.handles.delete(handle);
+      handles.delete(handle);
       try {
         await task();
       } catch (err) {
         this.logger.error('Loop failed', err);
       }
     }, delay);
-    this.handles.add(handle);
+    handles.add(handle);
     return handle;
   }
 
@@ -265,14 +308,23 @@ export class NextDnsApp {
   /** First reading, then the loop. Never throws. */
   async connect(generation) {
     if (!this.client || generation !== this.generation) return;
+    if (this.paused()) {
+      // A timer may fire a little early, or a longer pause came meanwhile.
+      this.schedule(Math.max(1_000, this.pausedUntil - this.now()), () => this.connect(generation));
+      return;
+    }
+    const epoch = this.epoch;
+    let applied;
     try {
-      await this.readAll({ publish: true });
-      if (generation !== this.generation) return;
-      this.logger.info(`NextDNS answers: ${this.profiles.size} profile(s)`);
+      applied = await this.readAll({ publish: true });
     } catch (err) {
       await this.failed(err, generation);
       return;
     }
+    // Not applied: a pause, a new configuration or a halt came meanwhile,
+    // and whoever did it scheduled what follows.
+    if (!applied || !this.current(generation, epoch)) return;
+    this.logger.info(`NextDNS answers: ${this.profiles.size} profile(s)`);
     this.scheduleLoop(generation);
   }
 
@@ -294,20 +346,6 @@ export class NextDnsApp {
 
   /** A reading failed: final refusal, or retry (never faster than the interval). */
   async failed(err, generation) {
-    if (generation !== this.generation) return;
-    const wasOnline = this.online;
-    this.online = false;
-    this.halt();
-    await this.publishTransports();
-    if (isKeyRefused(err)) {
-      this.blocked = true;
-      await this.store.set('refusals', 'key', await this.refusalKey(this.config));
-      this.logger.warn(
-        `API key refused by NextDNS (HTTP ${err.status}): not retried until changed`,
-      );
-      await this.setStatus(false, T.status.keyRefused);
-      return;
-    }
     const interval = this.config.intervalMs;
     let delay;
     if (isBusy(err)) {
@@ -325,11 +363,29 @@ export class NextDnsApp {
       if (isServerError(err) && err.retryAfterMs) {
         delay = clamp(err.retryAfterMs, delay, INTERVALS.BUSY_MAX_MS);
       }
-      this.retryDelay = Math.min(delay * 2, Math.max(interval, INTERVALS.RETRY_MAX_MS));
     }
+    // A pause holds whatever the generation (a new configuration does not
+    // make NextDNS less busy); kept in /data.
     if (isBusy(err) || isServerError(err)) {
-      this.pausedUntil = this.now() + delay;
+      this.pausedUntil = Math.max(this.pausedUntil, this.now() + delay);
       await this.store.set('meta', 'pausedUntil', String(this.pausedUntil));
+    }
+    if (generation !== this.generation) return;
+    const wasOnline = this.online;
+    this.online = false;
+    this.halt();
+    await this.publishTransports();
+    if (isKeyRefused(err)) {
+      this.blocked = true;
+      await this.store.set('refusals', 'key', await this.refusalKey(this.config));
+      this.logger.warn(
+        `API key refused by NextDNS (HTTP ${err.status}): not retried until changed`,
+      );
+      await this.setStatus(false, T.status.keyRefused);
+      return;
+    }
+    if (!isBusy(err)) {
+      this.retryDelay = Math.min(delay * 2, Math.max(interval, INTERVALS.RETRY_MAX_MS));
     }
     if (wasOnline || delay === interval) {
       this.logger.warn(`NextDNS fails: ${err.message}`);
@@ -358,7 +414,12 @@ export class NextDnsApp {
     return this.now() < this.pausedUntil;
   }
 
+  /**
+   * The status wanted is kept apart from the mark of what Gladys received:
+   * a reconnection sends the wanted one again.
+   */
   async setStatus(connected, message) {
+    this.wantedStatus = [connected, message];
     const key = JSON.stringify([connected, message]);
     if (key === this.lastStatus) return;
     this.lastStatus = key;
@@ -374,27 +435,40 @@ export class NextDnsApp {
    * Read the profiles, then each followed profile, one request at a time.
    * Throws when the list of the profiles fails, or on HTTP 429 anywhere (a
    * pause of every path). Any other failure of a profile request only leaves
-   * that part unread this round (the other figures still go).
+   * that part unread this round (the other figures still go). Resolves false,
+   * applying nothing, when a pause, a new configuration or a halt came
+   * meanwhile.
    */
   async readAll({ publish }) {
     const client = this.client;
-    if (!client) return;
+    const generation = this.generation;
+    const epoch = this.epoch;
+    const stale = () =>
+      this.paused() ||
+      client !== this.client ||
+      generation !== this.generation ||
+      epoch !== this.epoch;
+    if (!client || stale()) return false;
     const all = await client.profiles();
     const filter = this.config.filter;
-    const followed = (filter ? all.filter((p) => filter.ids.has(p.id)) : all).slice(
-      0,
-      LIMITS.PROFILES,
-    );
+    const candidates = filter ? all.filter((p) => filter.ids.has(p.id)) : all;
+    // The cap keeps the profiles already created first.
+    const created = new Set(createdProfiles(this.gladys).map((c) => c.profileId));
+    const ordered = [
+      ...candidates.filter((p) => created.has(p.id)),
+      ...candidates.filter((p) => !created.has(p.id)),
+    ];
+    const followed = ordered.slice(0, LIMITS.PROFILES);
     const missing = filter ? [...filter.ids].filter((id) => !all.some((p) => p.id === id)) : [];
     const readings = new Map();
     let failed = 0;
     for (const profile of followed) {
-      if (client !== this.client) return;
-      const reading = await this.readProfileOnce(client, profile.id);
+      const reading = await this.readProfileOnce(client, profile.id, stale);
+      if (!reading) return false;
       if (!reading.complete) failed += 1;
       readings.set(profile.id, reading);
     }
-    if (client !== this.client) return;
+    if (stale()) return false;
 
     this.profiles = new Map(followed.map((p) => [p.id, p]));
     for (const [id, reading] of readings) this.readings.set(id, reading);
@@ -403,6 +477,7 @@ export class NextDnsApp {
     }
     this.missing = missing;
     this.failedProfiles = failed;
+    this.leftOut = ordered.length - followed.length;
     this.online = true;
     this.retryDelay = 0;
 
@@ -414,10 +489,14 @@ export class NextDnsApp {
     await this.publishAllStates();
     await this.publishTransports();
     await this.setStatus(true, this.okMessage());
+    return true;
   }
 
-  /** One profile: settings, then the analytics. Throws only on HTTP 429. */
-  async readProfileOnce(client, id) {
+  /**
+   * One profile: settings, then the analytics. Throws only on HTTP 429;
+   * resolves null when `stale()` turns true before a request.
+   */
+  async readProfileOnce(client, id, stale = () => false) {
     const previous = this.readings.get(id);
     const reading = {
       status: null,
@@ -427,7 +506,12 @@ export class NextDnsApp {
       services: previous?.services ?? [],
       complete: true,
     };
+    let gone = false;
     const attempt = async (label, task) => {
+      if (gone || stale()) {
+        gone = true;
+        return null;
+      }
       try {
         return await task();
       } catch (err) {
@@ -445,7 +529,7 @@ export class NextDnsApp {
     reading.status = await attempt('status', () => client.status(id));
     reading.encryption = await attempt('encryption', () => client.encryption(id));
     reading.devices = await attempt('devices', () => client.devices(id));
-    return reading;
+    return gone ? null : reading;
   }
 
   /** The filter states of a fresh profile answer, for every filter of the device. */
@@ -477,6 +561,7 @@ export class NextDnsApp {
       profiles: this.profiles.size,
       failed: this.failedProfiles,
       missing: this.missing,
+      leftOut: this.leftOut,
     });
   }
 
@@ -572,13 +657,15 @@ export class NextDnsApp {
   // filter on needs `allow_commands`; turning one off (a security protection,
   // a parental control, a privacy blocking) needs `allow_disable_protection`
   // too. Both are off by default, checked when the command arrives AND just
-  // before it is sent. Commands are chained per profile and keep the client
-  // of the moment they arrived (a new configuration in between refuses
-  // them). Each one reads the profile from NextDNS just before acting and
-  // decides on that fresh reading only: unknown state, refused; already in
-  // the state asked, nothing is sent. Gladys waits 5 s: past 3.5 s after the
-  // command arrived, nothing is sent any more. A command that may have left
-  // is never said "not sent".
+  // before it is sent; a new configuration narrows them at once, before its
+  // start runs (tighten()). Only the options of the device are accepted.
+  // Commands are chained per profile (a request still unanswered holds the
+  // chain until it settles or times out) and keep the client of the moment
+  // they arrived. Each one reads the profile from NextDNS just before acting
+  // and decides on that fresh reading only: unknown state, refused; already
+  // in the state asked, nothing is sent. Gladys waits 5 s: past 3.5 s after
+  // the command arrived, nothing is sent any more. A command that may have
+  // left is never said "not sent".
 
   async setValue(_device, feature, value) {
     const received = this.now();
@@ -590,14 +677,26 @@ export class NextDnsApp {
       throw new Error(known ? T.errors.readOnly : T.errors.unknownDevice);
     }
     if (value === COMMAND_NONE) return;
+    try {
+      await this.commandValue(received, parsed.profileId, value);
+    } finally {
+      // Armed once the answer is decided: Gladys stores the choice on its ack.
+      this.resetSelectSoon(parsed.profileId);
+    }
+  }
+
+  async commandValue(received, profileId, value) {
     const match = typeof value === 'string' ? COMMAND_PATTERN.exec(value) : null;
-    const filter = match ? filterByKey(match[2]) : null;
-    if (!filter) throw new Error(T.errors.invalidValue);
+    if (!match) throw new Error(T.errors.invalidValue);
     const enable = match[1] === 'enable';
-    const profileId = parsed.profileId;
-    this.resetSelectSoon(profileId);
+    // The permissions first: they hold whatever the state of the profiles.
     if (!this.config.allowCommands) throw new Error(T.errors.commandsDisabled);
     if (!enable && !this.config.allowDisable) throw new Error(T.errors.disableRefused);
+    if (!this.profiles.has(profileId)) throw new Error(T.errors.unknownProfile);
+    // Only an option of this device's select: never a forged service id.
+    const allowed = commandOptions(filtersOf(this.servicesOf(profileId))).map((o) => o.value);
+    const filter = allowed.includes(value) ? filterByKey(match[2]) : null;
+    if (!filter) throw new Error(T.errors.invalidValue);
     const client = this.client;
     if (!client || this.blocked) throw new Error(T.errors.notConnected);
     if (this.paused()) throw new Error(T.errors.busy);
@@ -607,7 +706,11 @@ export class NextDnsApp {
     const run = previous.then(() =>
       this.command(received, { client, generation, profileId, filter, enable }),
     );
-    const chain = run.catch(() => {});
+    // The next command waits for this one, and for its request if still unanswered.
+    const chain = run
+      .catch(() => {})
+      .then(() => this.unsettled.get(profileId))
+      .catch(() => {});
     this.chains.set(profileId, chain);
     chain.then(() => {
       if (this.chains.get(profileId) === chain) this.chains.delete(profileId);
@@ -640,11 +743,11 @@ export class NextDnsApp {
       }
       // Decided on the fresh reading only, never on what is in memory.
       const read = readProfile(fresh);
-      const current = read.state(filter);
+      const current = read.commandState(filter);
       if (current !== 0 && current !== 1) throw new Error(T.errors.unknownState(null));
       const wanted = enable ? 1 : 0;
       if (current === wanted) {
-        await this.observed(profileId, filter, current);
+        this.observedLater(generation, profileId, filter, current);
         return;
       }
       const request = requestFor(profileId, filter, enable, { present: read.present(filter) });
@@ -680,6 +783,16 @@ export class NextDnsApp {
         sent = true;
       },
     });
+    // The chain of the profile waits for this request to settle, or for its timeout.
+    let expiry;
+    const settled = new Promise((resolve) => {
+      expiry = this.timers.setTimeout(resolve, TIMEOUTS.API + 1_000);
+      pending.then(resolve, resolve);
+    }).finally(() => {
+      this.timers.clearTimeout(expiry);
+      if (this.unsettled.get(profileId) === settled) this.unsettled.delete(profileId);
+    });
+    this.unsettled.set(profileId, settled);
     let handle;
     const ack = new Promise((resolve) => {
       handle = this.timers.setTimeout(resolve, Math.max(0, received + COMMAND_ACK_MS - this.now()));
@@ -693,22 +806,20 @@ export class NextDnsApp {
     ]);
     this.timers.clearTimeout(handle);
     if (outcome.done) {
-      if (generation === this.generation) await this.observed(profileId, filter, wanted);
+      this.observedLater(generation, profileId, filter, wanted);
       this.refreshSoon(generation, profileId);
       return;
     }
     if (outcome.waiting) {
-      // Sent, no answer yet: Gladys is answered now, the reading follows.
+      // Sent, no answer yet: Gladys is told so now, the reading follows.
       this.logger.info(`${filter.key} of profile ${profileId} sent, no confirmation yet`);
       pending
         .then(
-          async () => {
-            if (generation === this.generation) await this.observed(profileId, filter, wanted);
-          },
+          () => this.observedLater(generation, profileId, filter, wanted),
           (err) => this.logger.warn(`${filter.key} of profile ${profileId} failed: ${err.message}`),
         )
         .finally(() => this.refreshSoon(generation, profileId));
-      return;
+      throw new Error(T.errors.pendingConfirmation);
     }
     const { err } = outcome;
     await this.throwIfBusy(err, generation);
@@ -721,6 +832,14 @@ export class NextDnsApp {
     throw new Error(T.errors.unconfirmed(err), { cause: err });
   }
 
+  /** What a command just read or did, published without holding the answer to Gladys. */
+  observedLater(generation, profileId, filter, state) {
+    if (generation !== this.generation) return;
+    this.observed(profileId, filter, state).catch((err) =>
+      this.logger.debug(`State not published: ${err.message}`),
+    );
+  }
+
   /** What a command just read or did, until the next reading. */
   async observed(profileId, filter, state) {
     const reading = this.readings.get(profileId);
@@ -731,16 +850,30 @@ export class NextDnsApp {
     if (created) await this.publishStates(this.statesOf(created));
   }
 
-  /** Put the select back on "none" once Gladys stored the choice of the user. */
+  /**
+   * Put the select back on "none" once Gladys stored the choice of the user.
+   * Its own timers: a pause (halt) does not cancel it. Failed: the next
+   * round of the loop publishes it again.
+   */
   resetSelectSoon(profileId) {
     const featureId = profileIds(this.gladys, profileId).feature(FEATURES.COMMAND);
     this.published.delete(featureId);
-    this.schedule(SELECT_RESET_MS, async () => {
-      await this.gladys
-        .publishStates([{ device_feature_external_id: featureId, text: COMMAND_NONE }])
-        .then(() => this.published.set(featureId, COMMAND_NONE))
-        .catch((err) => this.logger.debug(`Select not reset: ${err.message}`));
-    });
+    this.schedule(
+      SELECT_RESET_MS,
+      async () => {
+        this.gladys.forgetPublishedStates(featureId);
+        try {
+          await this.gladys.publishChangedStates([
+            { device_feature_external_id: featureId, text: COMMAND_NONE },
+          ]);
+          this.published.set(featureId, COMMAND_NONE);
+        } catch (err) {
+          this.published.delete(featureId);
+          this.logger.debug(`Select not reset: ${err.message}`);
+        }
+      },
+      this.resetHandles,
+    );
   }
 
   /** Read the filters of a profile again in a moment (after a command). */
@@ -754,7 +887,13 @@ export class NextDnsApp {
       const version = this.filterVersions.get(profileId) ?? 0;
       try {
         const settings = await client.profile(profileId);
-        if (version !== (this.filterVersions.get(profileId) ?? 0) || client !== this.client) return;
+        if (
+          version !== (this.filterVersions.get(profileId) ?? 0) ||
+          client !== this.client ||
+          this.paused()
+        ) {
+          return;
+        }
         this.applySettings(reading, profileId, settings);
         const created = createdProfiles(this.gladys).find((c) => c.profileId === profileId);
         if (created) await this.publishStates(this.statesOf(created));
@@ -766,7 +905,7 @@ export class NextDnsApp {
     });
   }
 
-  // --- Devices created / deleted in Gladys -----------------------------------
+  // --- Devices created / updated / deleted in Gladys -------------------------
 
   async deviceCreated(device) {
     const parsed = parseExternalId(this.gladys, device?.external_id);
@@ -812,7 +951,7 @@ export class NextDnsApp {
       T.errors.testTooLong,
     );
     if (!this.online) {
-      const message = this.lastStatus ? JSON.parse(this.lastStatus)[1] : null;
+      const message = this.wantedStatus ? this.wantedStatus[1] : null;
       throw new Error(message?.en ?? T.errors.notConnected);
     }
     return T.test.ok({ profiles: this.profiles.size });

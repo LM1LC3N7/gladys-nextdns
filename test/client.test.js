@@ -189,6 +189,16 @@ test('the filters: keys are stable, states read, requests built', () => {
   assert.equal(serviceIdOf('filter-service-../x'), null);
   assert.equal(filterByKey('filter-security-nope'), null);
   assert.equal(filterByKey('filter-service-tiktok').label, 'Block TikTok');
+  // Only the own names: never a property of Object.prototype.
+  assert.equal(filterByKey('filter-service-constructor').label, 'Block constructor');
+  const loose = readProfile({ parentalControl: { services: [{ id: 'zoom' }], categories: [] } });
+  assert.equal(loose.state(filterByKey('filter-service-zoom')), 1, 'shown as listed');
+  assert.equal(
+    loose.commandState(filterByKey('filter-service-zoom')),
+    null,
+    'unknown for a command',
+  );
+  assert.equal(loose.commandState(filterByKey('filter-category-porn')), 0, 'absent: off');
   assert.deepEqual(
     filtersOf(['zoom', 'tiktok', 'zoom', 'BAD'])
       .slice(-2)

@@ -65,13 +65,21 @@ activés dans le profil : sinon les requêtes restent à 0.
   déjà dans l'état demandé ne déclenche aucun envoi. Quand la commande ne peut
   pas être vérifiée en 3,5 s, rien n'est envoyé et Gladys affiche un échec
   (jamais d'action après un échec affiché). Une commande partie sans réponse
-  de NextDNS est dite « envoyée, sans confirmation », jamais « non envoyée »,
-  et le profil est relu quelques secondes après.
-- Les commandes d'un profil passent une par une. La liste revient sur « — »
-  après chaque commande.
+  de NextDNS à temps s'affiche en échec avec « envoyée, pas encore
+  confirmée » (jamais « non envoyée ») ; l'état du filtre suit la réponse, et
+  le profil est relu quelques secondes après.
+- Seules les options de la liste du profil sont acceptées. Les commandes d'un
+  profil passent une par une (la suivante attend la réponse de la
+  précédente). La liste revient sur « — » 1,5 s après chaque commande.
+- Décocher une option prend effet tout de suite, même si une lecture est en
+  cours.
 - Les services bloqués sont ceux de votre profil : un service ajouté plus tard
-  dans NextDNS apparaît à la Découverte suivante ; un service retiré garde sa
-  fonctionnalité (à 0), pour ne jamais casser l'historique.
+  dans NextDNS apparaît dans la Découverte ; appuyez sur **Mettre à jour**
+  pour l'ajouter à l'appareil. Un service retiré garde sa fonctionnalité (à
+  0), pour ne jamais casser l'historique.
+- Le **temps de récréation** (Recreation Time) du contrôle parental n'est pas
+  pris en compte : l'état affiché est le réglage du filtre, même pendant une
+  récréation.
 
 ## Problèmes de connexion
 
@@ -91,8 +99,11 @@ activés dans le profil : sinon les requêtes restent à 0.
 
 ## Limites
 
-- Un seul compte NextDNS par intégration, 10 profils au plus, 60 services
-  bloqués par profil.
+- Un seul compte NextDNS par intégration, 10 profils au plus (les profils
+  déjà créés passent d'abord ; l'état de la connexion dit combien sont
+  écartés), 60 services bloqués par profil.
+- Gladys accepte 300 états par minute : la première publication de nombreux
+  profils (jusqu'à 10) peut prendre plusieurs tours de lecture.
 - **Devices seen** compte au plus 500 appareils.
 - Les parts en % n'ont pas d'unité dans Gladys (le cœur n'a pas de catégorie
   « part de requêtes ») : 75 veut dire 75 %.

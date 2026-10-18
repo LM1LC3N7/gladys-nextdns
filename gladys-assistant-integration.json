@@ -97,8 +97,8 @@
         "fr": "Autoriser la désactivation des protections"
       },
       "description": {
-        "en": "Lets Gladys turn off a security protection or a parental control filter (with the option above). Off: only turning filters on is possible.",
-        "fr": "Permet à Gladys de désactiver une protection de sécurité ou un filtre de contrôle parental (avec l'option ci-dessus). Désactivé : seule l'activation des filtres est possible."
+        "en": "Lets Gladys turn off a security protection, a privacy blocking (disguised trackers) or a parental control filter, category or service (with the option above). Off: only turning filters on is possible.",
+        "fr": "Permet à Gladys de désactiver une protection de sécurité, un blocage de vie privée (traceurs déguisés) ou un filtre, une catégorie ou un service du contrôle parental (avec l'option ci-dessus). Désactivé : seule l'activation des filtres est possible."
       },
       "required": false,
       "default": false

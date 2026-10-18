@@ -50,7 +50,7 @@ const join = (...parts) => ({
 
 export const T = {
   status: {
-    ok: ({ profiles, failed, missing }) =>
+    ok: ({ profiles, failed, missing, leftOut = 0 }) =>
       join(
         {
           en: `NextDNS answers: ${profiles} ${plural(profiles, 'profile', 'profiles')} read.`,
@@ -66,6 +66,12 @@ export const T = {
           ? {
               en: `Not found in the account: ${missing.join(', ')}.`,
               fr: `Introuvables dans le compte : ${missing.join(', ')}.`,
+            }
+          : {},
+        leftOut > 0
+          ? {
+              en: `${leftOut} ${plural(leftOut, 'profile', 'profiles')} left out (10 at most, the created ones first): pick the profiles to follow in the configuration.`,
+              fr: `${leftOut} ${plural(leftOut, 'profil écarté', 'profils écartés')} (10 au plus, les créés d’abord) : choisissez les profils à suivre dans la configuration.`,
             }
           : {},
       ),
@@ -136,6 +142,10 @@ export const T = {
     refused: (err) => `NextDNS refused the command (${reasonOf(err).en})`,
     unconfirmed: (err) =>
       `The command was sent but NextDNS did not confirm it (${reasonOf(err).en}): the filter is read again in a moment`,
+    pendingConfirmation:
+      'The command was sent, NextDNS has not confirmed it yet: the filter is read again in a moment',
+    unknownProfile:
+      'This profile is not followed (not read yet, or left out of the configuration): nothing was sent',
     configChanged: 'The configuration changed meanwhile: nothing was sent, try again',
     busy: 'NextDNS asked Gladys to slow down: nothing was sent, try again later',
     busyRefused:
