@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
 ### Added
 
 - First version, never tested against a real NextDNS account: NextDNS
@@ -51,4 +53,5 @@ the notes of the version's GitHub Release.
   one interval: only a real narrowing of the permissions stops what is in
   flight, and a first reading cut short starts again at once.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-nextdns/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-nextdns/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-nextdns/releases/tag/v0.1.1

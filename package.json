@@ -1,6 +1,6 @@
 {
   "name": "gladys-nextdns",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for NextDNS: queries, blocked share, encrypted DNS share, devices seen and filters of each profile, through the official NextDNS API. Unofficial, not affiliated with NextDNS.",
   "type": "module",
