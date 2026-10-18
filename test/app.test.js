@@ -504,6 +504,43 @@ test('unticking an option applies at once, even behind a slow reading (B1)', asy
   assert.equal(app.config.allowDisable, false);
 });
 
+test('a second connected during the first reading: the reading goes on at once', async () => {
+  const { app, gladys, nextdns, timers } = await setup();
+  let open;
+  const gate = new Promise((resolve) => {
+    open = resolve;
+  });
+  let gated = false;
+  nextdns.onRequest = async (r) => {
+    if (!gated && r.path === '/profiles') {
+      gated = true;
+      await gate;
+    }
+  };
+  // A start (first reading held), then Gladys reconnects with the same configuration.
+  const first = app.start({ ...BASE_CONFIG }, { force: true });
+  await settle();
+  assert.equal(app.online, false);
+  gladys.emit('connected');
+  await settle();
+  open();
+  await first;
+  await settle();
+  assert.equal(app.online, true, 'the first reading was not cut short');
+  assert.equal(gladys.fake.connectionStatus.connected, true);
+  assert.deepEqual(timers.delays(), [INTERVAL], 'the loop, not a retry in 5 minutes');
+});
+
+test('resume() reads at once when nothing has succeeded yet', async () => {
+  const { app, nextdns } = await setup();
+  app.online = false;
+  app.retryDelay = 0;
+  const before = nextdns.requests.length;
+  await app.resume();
+  assert.equal(app.online, true);
+  assert.ok(nextdns.requests.length > before);
+});
+
 test('a command accepted before a new configuration is refused before sending', async () => {
   const both = { ...BASE_CONFIG, allow_commands: true, allow_disable_protection: true };
   const { app, gladys, nextdns } = await setup({ config: both });

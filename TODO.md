@@ -103,14 +103,19 @@ up to date at the end of every milestone.
   have left is a failure "sent, not confirmed yet" (never "not sent"), the profile
   is read again 3 s later. A reading crossed by a command keeps the
   command's result (version per profile). The select is put back on "none"
-  1.5 s after each command (`publishStates`, not deduplicated).
+  1.5 s after the answer to each command is decided (armed in the `finally`
+  of setValue), on timers of its own that a pause never cancels:
+  `forgetPublishedStates(feature)` then `publishChangedStates`; a failure is
+  left to the next round of the loop (see "Select reset").
 - **A new configuration narrows at once** (review B1): `start()` and
   `reconnected()` apply, before queuing, the permissions both the old and
   the new configuration grant (`allowCommands`, `allowDisable` = old && new),
-  then bump the generation, so a command already accepted is refused before
-  sending and a reading in flight applies nothing. The same-configuration
-  path of `reconnected()` restarts the timers of the new generation as they
-  were (`resume()`: pause end, loop, or retry).
+  then bump the generation only when a permission really narrows, so a
+  command already accepted is refused before sending and a reading in flight
+  applies nothing; an unchanged configuration (a reconnection) never aborts
+  a reading. The same-configuration path of `reconnected()` restarts the
+  timers as they were (`resume()`: pause end, loop, retry), and reads at
+  once when nothing has succeeded yet (not online, no retry delay, no pause).
 - **Commands, review corrections**: no answer by 4.3 s is a failure shown as
   "sent, NextDNS has not confirmed it yet" (I1), the state follows the
   answer and the profile is read again; only the values of

@@ -150,12 +150,18 @@ export class NextDnsApp {
    */
   tighten(rawConfig) {
     const next = normalizeConfig(rawConfig);
-    this.config = {
+    const narrowed = {
       ...this.config,
       allowCommands: this.config.allowCommands && next.allowCommands,
       allowDisable: this.config.allowDisable && next.allowDisable,
     };
-    this.generation += 1;
+    // Only a real narrowing invalidates what is in flight: an unchanged
+    // configuration (a reconnection) never aborts a reading.
+    const lessAllowed =
+      narrowed.allowCommands !== this.config.allowCommands ||
+      narrowed.allowDisable !== this.config.allowDisable;
+    this.config = narrowed;
+    if (lessAllowed) this.generation += 1;
   }
 
   /**
@@ -188,12 +194,12 @@ export class NextDnsApp {
       if (this.profiles.size > 0) await this.publishDiscovered();
       if (this.online) await this.publishAllStates();
       await this.publishTransports();
-      this.resume();
+      await this.resume();
     });
   }
 
   /** The timers of the previous generation stopped (tighten): start them again, as they were. */
-  resume() {
+  async resume() {
     this.halt();
     const generation = this.generation;
     if (this.blocked || !this.client) return;
@@ -201,6 +207,9 @@ export class NextDnsApp {
       this.schedule(this.pausedUntil - this.now(), () => this.connect(generation));
     } else if (this.online) {
       this.scheduleLoop(generation);
+    } else if (this.retryDelay === 0) {
+      // Nothing has succeeded yet (a first reading cut short): read at once.
+      await this.connect(generation);
     } else {
       this.schedule(Math.max(this.config.intervalMs, this.retryDelay), () =>
         this.connect(generation),

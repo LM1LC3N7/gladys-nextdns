@@ -47,5 +47,8 @@ the notes of the version's GitHub Release.
   during a pause; an updated device gets its states again.
 - With more than 10 profiles, the created ones are kept and the status says
   how many are left out.
+- A reconnection to Gladys during the first reading no longer delays it by
+  one interval: only a real narrowing of the permissions stops what is in
+  flight, and a first reading cut short starts again at once.
 
 [Unreleased]: https://github.com/LM1LC3N7/gladys-nextdns/commits/main
